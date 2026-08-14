@@ -115,7 +115,8 @@ The first account-level Cloudflare tool call opens an OAuth authorization flow.
 
 ```bash
 npm ci
-npm run typecheck
+npm run cf-typegen
+npx tsc -b
 npm run build
 npx wrangler deploy --dry-run
 ```
