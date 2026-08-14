@@ -10,6 +10,7 @@ declare module "react-router" {
 }
 
 type ChatRole = "user" | "assistant";
+type OmegaModel = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 interface ChatMessage {
 	role: ChatRole;
@@ -25,9 +26,10 @@ interface AiRequestBody {
 
 interface OmegaEnv extends Env {
 	AI: Ai;
+	AI_RATE_LIMITER: RateLimit;
 	OMEGA_MODE: string;
 	LIVE_TRADING_ENABLED: string;
-	AI_MODEL: string;
+	AI_MODEL: OmegaModel;
 	ALLOWED_ORIGINS: string;
 	OMEGA_API_TOKEN?: string;
 }
@@ -111,32 +113,49 @@ function clamp(value: number, min: number, max: number): number {
 	return Math.min(max, Math.max(min, value));
 }
 
-async function secureEqual(left: string, right: string): Promise<boolean> {
-	const encoder = new TextEncoder();
-	const [leftHash, rightHash] = await Promise.all([
-		crypto.subtle.digest("SHA-256", encoder.encode(left)),
-		crypto.subtle.digest("SHA-256", encoder.encode(right)),
-	]);
+function extractCredential(request: Request): string {
+	const authorization = request.headers.get("Authorization") ?? "";
+	const bearer = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+	return bearer || request.headers.get("X-Omega-API-Key")?.trim() || "";
+}
 
-	const a = new Uint8Array(leftHash);
-	const b = new Uint8Array(rightHash);
-	if (a.length !== b.length) return false;
+async function sha256Hex(value: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function secureEqual(left: string, right: string): Promise<boolean> {
+	const [leftHash, rightHash] = await Promise.all([sha256Hex(left), sha256Hex(right)]);
+	if (leftHash.length !== rightHash.length) return false;
 
 	let diff = 0;
-	for (let i = 0; i < a.length; i += 1) diff |= a[i] ^ b[i];
+	for (let i = 0; i < leftHash.length; i += 1) {
+		diff |= leftHash.charCodeAt(i) ^ rightHash.charCodeAt(i);
+	}
 	return diff === 0;
 }
 
 async function isAuthorized(request: Request, env: OmegaEnv): Promise<boolean> {
 	if (!env.OMEGA_API_TOKEN) return false;
+	const supplied = extractCredential(request);
+	return supplied ? secureEqual(supplied, env.OMEGA_API_TOKEN) : false;
+}
 
-	const authorization = request.headers.get("Authorization") ?? "";
-	const bearer = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-	const apiKey = request.headers.get("X-Omega-API-Key")?.trim() ?? "";
-	const supplied = bearer || apiKey;
-	if (!supplied) return false;
+async function enforceAiRateLimit(request: Request, env: OmegaEnv): Promise<Response | null> {
+	const credential = extractCredential(request);
+	if (!credential) return jsonResponse({ error: "unauthorized" }, 401, { "WWW-Authenticate": "Bearer" });
 
-	return secureEqual(supplied, env.OMEGA_API_TOKEN);
+	const fingerprint = await sha256Hex(credential);
+	const pathname = new URL(request.url).pathname;
+	const { success } = await env.AI_RATE_LIMITER.limit({ key: `${fingerprint}:${pathname}` });
+	if (!success) {
+		return jsonResponse(
+			{ error: "rate_limit_exceeded", retry_after_seconds: 60 },
+			429,
+			{ "Retry-After": "60" },
+		);
+	}
+	return null;
 }
 
 async function parseAiRequest(request: Request): Promise<
@@ -213,6 +232,9 @@ async function handleAiStream(request: Request, env: OmegaEnv): Promise<Response
 		return jsonResponse({ error: "unauthorized" }, 401, { "WWW-Authenticate": "Bearer" });
 	}
 
+	const rateLimited = await enforceAiRateLimit(request, env);
+	if (rateLimited) return rateLimited;
+
 	const parsed = await parseAiRequest(request);
 	if (!parsed.ok) return parsed.response;
 
@@ -231,7 +253,7 @@ async function handleAiStream(request: Request, env: OmegaEnv): Promise<Response
 		headers.set("X-Omega-Mode", env.OMEGA_MODE);
 		headers.set("X-Omega-Model", env.AI_MODEL);
 
-		return new Response(stream as ReadableStream, { status: 200, headers });
+		return new Response(stream, { status: 200, headers });
 	} catch (error) {
 		console.error("Workers AI stream failed", error);
 		return jsonResponse({ error: "ai_inference_failed" }, 502);
@@ -242,6 +264,9 @@ async function handleAiGenerate(request: Request, env: OmegaEnv): Promise<Respon
 	if (!(await isAuthorized(request, env))) {
 		return jsonResponse({ error: "unauthorized" }, 401, { "WWW-Authenticate": "Bearer" });
 	}
+
+	const rateLimited = await enforceAiRateLimit(request, env);
+	if (rateLimited) return rateLimited;
 
 	const parsed = await parseAiRequest(request);
 	if (!parsed.ok) return parsed.response;
