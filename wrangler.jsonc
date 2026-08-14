@@ -1,0 +1,31 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "omegaaa",
+	"main": "./workers/app.ts",
+	"compatibility_date": "2025-03-07",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	"upload_source_maps": true,
+	"ai": {
+		"binding": "AI"
+	},
+	"ratelimits": [
+		{
+			"name": "AI_RATE_LIMITER",
+			"namespace_id": "50581801",
+			"simple": {
+				"limit": 30,
+				"period": 60
+			}
+		}
+	],
+	"vars": {
+		"OMEGA_MODE": "PAPER",
+		"LIVE_TRADING_ENABLED": "false",
+		"AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+		"ALLOWED_ORIGINS": ""
+	}
+}
