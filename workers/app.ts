@@ -167,14 +167,25 @@ async function parseAiRequest(request: Request): Promise<
 		return { ok: false, response: jsonResponse({ error: "content_type_must_be_application_json" }, 415) };
 	}
 
-	const contentLength = Number(request.headers.get("Content-Length") ?? "0");
-	if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+	const declaredLength = Number(request.headers.get("Content-Length") ?? "0");
+	if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+		return { ok: false, response: jsonResponse({ error: "request_body_too_large" }, 413) };
+	}
+
+	let rawBody: string;
+	try {
+		rawBody = await request.text();
+	} catch {
+		return { ok: false, response: jsonResponse({ error: "unable_to_read_request_body" }, 400) };
+	}
+
+	if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY_BYTES) {
 		return { ok: false, response: jsonResponse({ error: "request_body_too_large" }, 413) };
 	}
 
 	let body: AiRequestBody;
 	try {
-		body = (await request.json()) as AiRequestBody;
+		body = JSON.parse(rawBody) as AiRequestBody;
 	} catch {
 		return { ok: false, response: jsonResponse({ error: "invalid_json" }, 400) };
 	}
