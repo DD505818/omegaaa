@@ -12,6 +12,16 @@
 	"ai": {
 		"binding": "AI"
 	},
+	"ratelimits": [
+		{
+			"name": "AI_RATE_LIMITER",
+			"namespace_id": "50581801",
+			"simple": {
+				"limit": 30,
+				"period": 60
+			}
+		}
+	],
 	"vars": {
 		"OMEGA_MODE": "PAPER",
 		"LIVE_TRADING_ENABLED": "false",
